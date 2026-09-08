@@ -294,14 +294,18 @@ def ip_for_switch_link(link_index: int, node_index: int, local_index_in_pair: in
     """
     /24 scheme for N-node switch topology.
 
+    For each discovery link, the two logical interfaces are placed on
+    different subnets. Linux routing becomes ambiguous when two interfaces
+    on the same host are assigned addresses from the same subnet.
+
     For each link_index:
-      network = 192.168.link_index.0/24
+      networks = 192.168.[link_index * 2, link_index * 2 + 1].0/24
       host = 10 + node_index * 2 + local_index_in_pair
 
     node_index is 0-based index in sorted cluster_machine_ids.
     local_index_in_pair is 0 for discovery iface, 1 for paired iface.
     """
-    base_octet3 = link_index  # 192.168.<link_index>.X
+    base_octet3 = link_index * 2 + local_index_in_pair
     host = 10 + node_index * 2 + local_index_in_pair
     return f"192.168.{base_octet3}.{host}/24"
 
