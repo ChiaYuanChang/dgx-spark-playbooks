@@ -58,6 +58,11 @@ SEND_INTERVAL = 0.5
 DEFAULT_PRIMARY_PORT = 9999
 REPORT_TIMEOUT = 30  # seconds to wait for all nodes to report
 
+# Keep the CX7 fabric away from the common 192.168.0.0/24 LAN subnet.
+# Each logical interface gets its own /24; link 0 uses .200/.201 and
+# link 1 uses .202/.203.
+FABRIC_SUBNET_BASE_OCTET = 200
+
 
 def get_mac(iface: str) -> str:
     """Return MAC address string (lowercase) for the given interface."""
@@ -254,7 +259,7 @@ def ip_for_2node_link(link_index: int, node_id: int, local_index_in_pair: int) -
     /24 scheme with 4 hosts per link (2 per node).
 
     For each link_index:
-      network = 192.168.link_index.0/24
+      network = 192.168.[FABRIC_SUBNET_BASE_OCTET + link_index].0/24
       hosts .1 .. .4 used for the two nodes (2 endpoints each).
 
     Node 1:
@@ -266,7 +271,7 @@ def ip_for_2node_link(link_index: int, node_id: int, local_index_in_pair: int) -
       local_index_in_pair = 1 -> .4
     """
     host = 1 + (0 if node_id == 1 else 2) + local_index_in_pair
-    return f"192.168.{link_index}.{host}/24"
+    return f"192.168.{FABRIC_SUBNET_BASE_OCTET + link_index}.{host}/24"
 
 def ip_for_3node_ring_link(link_index: int, node_id: int, local_index_in_pair: int) -> str:
     """
@@ -288,7 +293,8 @@ def ip_for_3node_ring_link(link_index: int, node_id: int, local_index_in_pair: i
       192.168.[2, 3].2/24 -> Node 1
       192.168.[4, 5].2/24 -> Node 2
     """
-    return f"192.168.{link_index * 2 + local_index_in_pair}.{node_id}/24"
+    subnet_octet = FABRIC_SUBNET_BASE_OCTET + link_index * 2 + local_index_in_pair
+    return f"192.168.{subnet_octet}.{node_id}/24"
 
 def ip_for_switch_link(link_index: int, node_index: int, local_index_in_pair: int) -> str:
     """
@@ -299,13 +305,14 @@ def ip_for_switch_link(link_index: int, node_index: int, local_index_in_pair: in
     on the same host are assigned addresses from the same subnet.
 
     For each link_index:
-      networks = 192.168.[link_index * 2, link_index * 2 + 1].0/24
+      networks = 192.168.[FABRIC_SUBNET_BASE_OCTET + link_index * 2,
+                         FABRIC_SUBNET_BASE_OCTET + link_index * 2 + 1].0/24
       host = 10 + node_index * 2 + local_index_in_pair
 
     node_index is 0-based index in sorted cluster_machine_ids.
     local_index_in_pair is 0 for discovery iface, 1 for paired iface.
     """
-    base_octet3 = link_index * 2 + local_index_in_pair
+    base_octet3 = FABRIC_SUBNET_BASE_OCTET + link_index * 2 + local_index_in_pair
     host = 10 + node_index * 2 + local_index_in_pair
     return f"192.168.{base_octet3}.{host}/24"
 
