@@ -233,10 +233,10 @@ def run_nccl_test(nodes_info, ring_topology, up_interfaces):
         return False
 
     # The same interface names are verified on every node by
-    # check_and_get_up_cx7_interfaces(). Use one common Ethernet interface
-    # for MPI/UCX bootstrap and NCCL socket traffic instead of relying on a
-    # machine-specific interface name.
-    nccl_socket_iface = up_interfaces[0]
+    # check_and_get_up_cx7_interfaces(). Keep all detected interfaces for
+    # MPI/UCX bootstrap and NCCL socket traffic. This is required for the
+    # 3-node ring layout because each interface serves a different peer link.
+    nccl_socket_ifaces = ",".join(up_interfaces)
 
     threads = []
     for i, node in enumerate(nodes_info):
@@ -262,9 +262,9 @@ def run_nccl_test(nodes_info, ring_topology, up_interfaces):
         f"{NCCL_ENV} && mpirun -np {len(nodes_info)} -H {host_list} "
         '--mca plm_rsh_agent "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" '
         "-x LD_LIBRARY_PATH=$LD_LIBRARY_PATH "
-        f"-x UCX_NET_DEVICES={nccl_socket_iface} "
-        f"-x NCCL_SOCKET_IFNAME={nccl_socket_iface} "
-        f"-x OMPI_MCA_btl_tcp_if_include={nccl_socket_iface} "
+        f"-x UCX_NET_DEVICES={nccl_socket_ifaces} "
+        f"-x NCCL_SOCKET_IFNAME={nccl_socket_ifaces} "
+        f"-x OMPI_MCA_btl_tcp_if_include={nccl_socket_ifaces} "
         "-x NCCL_IB_HCA=rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1 "
         "-x NCCL_IB_SUBNET_AWARE_ROUTING=1 "
         f"{ring_topology_specific_env}"
