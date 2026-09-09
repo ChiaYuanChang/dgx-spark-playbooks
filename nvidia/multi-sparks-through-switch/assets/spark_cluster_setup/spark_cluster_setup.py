@@ -225,18 +225,8 @@ def setup_nccl_deps(node, ring_topology):
         close_ssh_session(ssh)
         raise Exception(f"Failed to setup NCCL dependencies on node {node["ip_address"]}:\n{e}")
 
-def run_nccl_test(nodes_info, ring_topology, up_interfaces):
-    """Runs the NCCL test using a CX7 interface detected during validation."""
-
-    if not up_interfaces:
-        print("ERROR: No UP CX7 interface was detected for the NCCL test.")
-        return False
-
-    # The same interface names are verified on every node by
-    # check_and_get_up_cx7_interfaces(). Keep all detected interfaces for
-    # MPI/UCX bootstrap and NCCL socket traffic. This is required for the
-    # 3-node ring layout because each interface serves a different peer link.
-    nccl_socket_ifaces = ",".join(up_interfaces)
+def run_nccl_test(nodes_info, ring_topology):
+    """Runs the NCCL test. MPI/NCCL bootstrap goes over the management network."""
 
     threads = []
     for i, node in enumerate(nodes_info):
@@ -254,22 +244,6 @@ def run_nccl_test(nodes_info, ring_topology, up_interfaces):
     print(f"Successfully setup NCCL dependencies on all nodes...")
 
     print(f"Running NCCL test...")
-    
-    # Generate the mpirun command
-    host_list = ",".join(f"{node['ip_address']}:1" for node in nodes_info)
-    ring_topology_specific_env = "-x NCCL_IB_MERGE_NICS=0 -x NCCL_NET_PLUGIN=none " if ring_topology else ""
-    mpirun_cmd = (
-        f"{NCCL_ENV} && mpirun -np {len(nodes_info)} -H {host_list} "
-        '--mca plm_rsh_agent "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" '
-        "-x LD_LIBRARY_PATH=$LD_LIBRARY_PATH "
-        f"-x UCX_NET_DEVICES={nccl_socket_ifaces} "
-        f"-x NCCL_SOCKET_IFNAME={nccl_socket_ifaces} "
-        f"-x OMPI_MCA_btl_tcp_if_include={nccl_socket_ifaces} "
-        "-x NCCL_IB_HCA=rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1 "
-        "-x NCCL_IB_SUBNET_AWARE_ROUTING=1 "
-        f"{ring_topology_specific_env}"
-        "$HOME/nccl-tests_spark_cluster/build/all_gather_perf -b 16G -e 16G -f 2"
-    )
 
     # Run command on the primary node (first node in the list)
     node0 = nodes_info[0]
@@ -277,6 +251,36 @@ def run_nccl_test(nodes_info, ring_topology, up_interfaces):
     if not ssh.get_transport().is_active():
         print(f"Could not establish a session to node {node0}. Check the credentials and try again.")
         return False
+
+    # Every node can reach node0's management IP, but the CX7 subnets are
+    # per-link (ring) and node0 also exposes docker0/loopback. Open MPI tries
+    # all advertised addresses in order and blocks on the unreachable ones,
+    # so pin OOB, BTL and the NCCL bootstrap socket to the management interface.
+    cmd = f"ip -o -4 addr show | awk '$4 ~ /^{node0['ip_address']}\\// {{print $2}}'"
+    exit_code, output, error = paramiko_run_command_with_output(ssh, cmd)
+    mgmt_iface = output.split()[0] if output.split() else ""
+    if exit_code or not mgmt_iface:
+        print(f"ERROR: Could not find the interface holding {node0['ip_address']} on node {node0['ip_address']}: {error}")
+        close_ssh_session(ssh)
+        return False
+    print(f"Using management interface {mgmt_iface} for MPI/NCCL bootstrap")
+
+    # Generate the mpirun command
+    host_list = ",".join(f"{node['ip_address']}:1" for node in nodes_info)
+    ring_topology_specific_env = "-x NCCL_IB_MERGE_NICS=0 -x NCCL_NET_PLUGIN=none " if ring_topology else ""
+    mpirun_cmd = (
+        f"{NCCL_ENV} && mpirun -np {len(nodes_info)} -H {host_list} "
+        '--mca plm_rsh_agent "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" '
+        f"--mca oob_tcp_if_include {mgmt_iface} "
+        "-x LD_LIBRARY_PATH=$LD_LIBRARY_PATH "
+        f"-x UCX_NET_DEVICES={mgmt_iface} "
+        f"-x NCCL_SOCKET_IFNAME={mgmt_iface} "
+        f"-x OMPI_MCA_btl_tcp_if_include={mgmt_iface} "
+        "-x NCCL_IB_HCA=rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1 "
+        "-x NCCL_IB_SUBNET_AWARE_ROUTING=1 "
+        f"{ring_topology_specific_env}"
+        "$HOME/nccl-tests_spark_cluster/build/all_gather_perf -b 16G -e 16G -f 2"
+    )
 
     print(f"NCCL test command: {mpirun_cmd}")
     exit_code, output, error = paramiko_run_command_with_output(ssh, mpirun_cmd)
@@ -900,7 +904,7 @@ def main():
             print("Running NCCL test...")
             if ring_topology:
                 print("Detected ring topology...")
-            if not run_nccl_test(config.get("nodes_info", []), ring_topology, up_interfaces):
+            if not run_nccl_test(config.get("nodes_info", []), ring_topology):
                 return
             print("NCCL test completed.")
 
